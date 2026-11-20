@@ -24,7 +24,7 @@ type hookSpec struct {
 
 const hookTimeout = 10
 
-func All() []Agent { return []Agent{Claude{}} }
+func All() []Agent { return []Agent{Claude{}, Codex{}} }
 
 func ByName(name string) (Agent, error) {
 	for _, a := range All() {
