@@ -67,6 +67,11 @@ mirror() {
 	return 0
 }
 
+draft_shaped() {
+	[[ $1 =~ ^(pr|issue|polished|msg|prompt|draft)[-0-9] ]] ||
+		[[ $1 =~ -(comment|comments|reply|replies|description|body|adjudication|verdict|closing-comment)\.(md|html)$ ]]
+}
+
 while IFS= read -r p; do
 	lp=$(printf '%s' "$p" | tr '[:upper:]' '[:lower:]')
 	case $lp in *.md | *.html) ;; *) continue ;; esac
@@ -74,7 +79,16 @@ while IFS= read -r p; do
 		mirror "$p"
 		continue
 	fi
-	# nudges
+	hoard_disabled nudge && continue
+	[[ $p == "$agents"/*/* ]] || continue
+	rel=${p#"$agents"/}
+	scope=${rel%%/*}
+	rest=${rel#*/}
+	if [ "$scope" != "$HOARD_SCOPE" ]; then
+		notes+=("hoard: $p is in scope '$scope'; the active scope is '$HOARD_SCOPE' (Agents/$HOARD_SCOPE/). Keep scopes separate unless the user asked for this.")
+	elif [[ $rest != */* ]] && draft_shaped "$(basename "$lp")"; then
+		notes+=("hoard: '$rest' looks like a draft. Drafts belong in Agents/$HOARD_SCOPE/<subject>/Drafts/<slug>/; durable notes in Agents/$HOARD_SCOPE/<subject>/.")
+	fi
 done < <(hoard_paths)
 
 find "$map_dir" -type f -mtime +7 -exec rm -f {} + 2>/dev/null
