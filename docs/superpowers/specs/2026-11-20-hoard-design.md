@@ -32,7 +32,7 @@ Agents never depend on a vault path: they search (`rg`, honouring `<vault>/.igno
 
 Consumers (for example project-appraisal's opt-in `--vault` connector) may rely on:
 
-1. **Root:** `HOARD_VAULT_ROOT`, from the environment or `~/.config/hoard/config.env`.
+1. **Root:** `HOARD_VAULT_ROOT`, from the environment or `$XDG_CONFIG_HOME/hoard/config.env` (`$HOME/.config/hoard/config.env` when `XDG_CONFIG_HOME` is unset, on every OS). The file holds `KEY=value` lines, values optionally double-quoted; an environment variable of the same name wins.
 2. **Subject of a path under the root:**
    - `Agents/<scope>/<subject>/…` → `Agents/<scope>/<subject>`;
    - `Agents/<scope>/_Archive/<subject>/…` → `Agents/<scope>/<subject>` (archiving does not change identity);
@@ -59,13 +59,13 @@ Hooks are bash; the installer is Go.
 
 ### Configuration
 
-`~/.config/hoard/config.env`, written by the installer and sourced by the hooks:
+`$XDG_CONFIG_HOME/hoard/config.env` (fallback `$HOME/.config`), written by the installer and parsed (never sourced) by the hooks:
 
 | Key | Default | Meaning |
 |---|---|---|
 | `HOARD_VAULT_ROOT` | (required) | vault root |
-| `HOARD_DEFAULT_SCOPE` | `personal` | scope when `AGENT_SCOPE` is unset |
-| `HOARD_MIRROR_EXCLUDE` | empty | newline-separated globs the mirror skips |
+| `HOARD_DEFAULT_SCOPE` | `personal` | scope when `AGENT_SCOPE` is unset; also the shared scope recall searches from other scopes |
+| `HOARD_MIRROR_EXCLUDE` | empty | colon-separated globs the mirror skips |
 | `HOARD_DISABLE` | empty | comma list of `recall`, `mirror`, `nudge` |
 
 Environment variables of the same name override the file. The active scope is `$AGENT_SCOPE`, else `HOARD_DEFAULT_SCOPE`; it must match `^[a-z0-9][a-z0-9-]*$` or the default is used.
@@ -77,17 +77,17 @@ State lives in `${XDG_STATE_HOME:-~/.local/state}/hoard/`; files older than 7 da
 Ported from an existing deterministic recall hook, without any external relevance-scoring service.
 
 - Extracts terms from the prompt and the cwd's git branch: issue numbers (3–5 digits, not years), quoted phrases, identifiers (dotted, snake, CamelCase), and words of 4+ letters minus a stop list; at most 12 terms.
-- Searches `*.md` and `*.html` with `rg` under: the active scope's `Agents/<scope>/`, `Agents/personal/` when the scope is not `personal`, and every top-level vault folder except `Agents/`. Other scopes are never searched. `_Archive` is skipped. `.ignore` applies.
+- Searches `*.md` and `*.html` with `rg` under: the active scope's `Agents/<scope>/`, `Agents/<HOARD_DEFAULT_SCOPE>/` when the active scope differs, and every top-level vault folder except `Agents/`. Other scopes are never searched. `_Archive` and `_Inbox/scratch` are skipped. `.ignore` applies.
 - Scores files (issue match 5, subject-name match 2, phrase/identifier hit 2, word hit 1; keep ≥ 3), groups by subject, prefers durable files over drafts, emits at most 3 subjects × 3 files with title, age and matched terms.
 - Per-session state (path + mtime) suppresses repeats.
-- Output is the runtime's prompt-time context injection. Where a runtime has none, recall is unavailable there and `hoard doctor` says so.
+- Output is the runtime's prompt-time context injection: Claude Code and Codex `UserPromptSubmit` (`hookSpecificOutput.additionalContext`), Hermes `pre_llm_call` (`{"context": …}`, prompt read from `extra.user_message`).
 
 ### `after-write.sh` — post write
 
-Wired on Claude `PostToolUse` (Write, Edit), Codex `PostToolUse` (`apply_patch`), Hermes `post_tool_call` (`write_file`, `patch`). Never blocks, never modifies the written file. For each written path:
+Wired on Claude `PostToolUse` (Write, Edit), Codex `PostToolUse` (`apply_patch`), Hermes `post_tool_call` (`write_file`, `patch`). Never blocks, never modifies the written file. Hermes ignores `post_tool_call` output, so there the mirror still copies but the agent gets no notes; `hoard doctor` says so. For each written path:
 
 1. **Mirror.** A `.md` or `.html` file under `/tmp` or `$TMPDIR`, not matching `HOARD_MIRROR_EXCLUDE`, is copied into `Agents/<scope>/_Inbox/`:
-   - inside a recognized agent scratch or session directory (Claude `…/scratchpad/`; Codex and Hermes equivalents confirmed during implementation) → `_Inbox/scratch/<YYYY-MM-DD>-<session-short>/<path under the scratch root>`, silently;
+   - inside an agent scratchpad under the temp root (Claude Code's `<tmp>/claude-<uid>/<project>/<session>/scratchpad/`; Codex and Hermes keep scratch outside the temp root, so it is not mirrored) → `_Inbox/scratch/<YYYY-MM-DD>-<session-short>/<path under the scratch root>`, silently;
    - otherwise → `_Inbox/<YYYY-MM-DD>-<name>`, and the agent is told where the copy is and to move it into its subject.
    
    A per-session `src → dest` map makes later edits overwrite the same copy. A collision with a file the mirror did not create gets `-2`, `-3`, … suffixes.
@@ -114,11 +114,11 @@ Ported from an existing tidy skill; paths come from config. One scope per run:
 
 ### Rules (`rules/HOARD.md`)
 
-Covers the pillars, the layout, scope separation, search-don't-hardcode, the mirror, and tidy. The installer adds one include/reference line to each agent's rules file pointing at the installed copy; it does not paste the content.
+Covers the pillars, the layout, scope separation, search-don't-hardcode, the mirror, and tidy. Claude Code gets one `@<data>/rules/HOARD.md` import line in `CLAUDE.md`. Codex `AGENTS.md` and Hermes `SOUL.md` have no import syntax, so the installer pastes the content between `<!-- hoard:begin -->` / `<!-- hoard:end -->` markers and refreshes it on reinstall.
 
 ### Installer (`hoard`, Go)
 
-- `hoard install --agent claude|codex|hermes [--vault <path>]`: writes `config.env` (prompting for the vault root if absent), copies hooks, skill and rules to `~/.local/share/hoard/`, merges hook entries into the agent's config (`~/.claude/settings.json`, `~/.codex/hooks.json`, Hermes hook config), installs the tidy skill where the agent loads skills, and adds the rules reference. Backs up every file it edits; running twice changes nothing.
+- `hoard install --agent claude|codex|hermes [--vault <path>]`: writes `config.env` (`--vault` is required when no config exists), copies hooks, skill and rules to `~/.local/share/hoard/`, merges hook entries into the agent's config (`~/.claude/settings.json`, `~/.codex/hooks.json`, Hermes hook config), installs the tidy skill as `hoard-tidy` where the agent loads skills, and adds the rules (see Rules). Codex and Hermes ask the user to trust new hooks on first run; install prints how. Backs up every file it edits; running twice changes nothing.
 - `hoard uninstall --agent …`: removes exactly what install added.
 - `hoard doctor`: checks dependencies, config, vault root, and per-agent wiring, including whether recall can inject context in that runtime.
 
